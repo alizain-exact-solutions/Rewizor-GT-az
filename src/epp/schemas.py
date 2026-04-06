@@ -9,7 +9,7 @@ Field ordering matches the InsERT EDI++ 1.12 specification tables:
 
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from src.epp.constants import (
     DOC_TYPE_PURCHASE_INVOICE,
@@ -18,6 +18,8 @@ from src.epp.constants import (
     EPP_VERSION,
     PAYMENT_TRANSFER,
     REGISTER_PURCHASE,
+    VALID_DOC_TYPES,
+    VALID_VAT_SYMBOLS,
 )
 
 
@@ -47,6 +49,21 @@ class EPPInfo(BaseModel):
 
 class EPPHeader(BaseModel):
     """Single document header – full Table 3 (~51 fields)."""
+
+    @field_validator("doc_type")
+    @classmethod
+    def validate_doc_type(cls, v: str) -> str:
+        v = v.strip().upper()
+        if v not in VALID_DOC_TYPES:
+            raise ValueError(f"Invalid doc_type '{v}'. Must be one of: {sorted(VALID_DOC_TYPES)}")
+        return v
+
+    @field_validator("issue_date")
+    @classmethod
+    def validate_issue_date(cls, v: str) -> str:
+        if not v:
+            raise ValueError("issue_date is required")
+        return v
 
     # ── Document identification ──
     doc_type: str = DOC_TYPE_PURCHASE_INVOICE   # 1  Typ
@@ -99,20 +116,20 @@ class EPPHeader(BaseModel):
     flag_36: int = 0                            # 36
     flag_37: int = 0                            # 37
     flag_38: int = 0                            # 38
-    field_39: str = ""                          # 39
-    field_40: str = ""                          # 40
-    field_41: str = ""                          # 41
-    field_42: str = ""                          # 42
-    field_43: str = ""                          # 43
+    field_39: str = "0"                         # 39
+    field_40: str = "0"                         # 40
+    field_41: str = "0"                         # 41
+    field_42: str = "0"                         # 42
+    field_43: str = "0"                         # 43
 
     # ── Currency ──
     currency: str = "PLN"                       # 44 Waluta
     exchange_rate: float = 1.0                  # 45 Kurs waluty
 
     # ── Trailing ──
-    field_46: str = ""                          # 46
-    field_47: str = ""                          # 47
-    field_48: str = ""                          # 48
+    field_46: str = "0"                         # 46
+    field_47: str = "0"                         # 47
+    field_48: str = "0"                         # 48
     flag_49: int = 0                            # 49
     flag_50: int = 0                            # 50
     flag_51: int = 1                            # 51
@@ -125,6 +142,13 @@ class EPPVatRow(BaseModel):
 
     For reverse charge ("00"), ``vat_rate`` must be ``-5.00``.
     """
+
+    @field_validator("vat_symbol")
+    @classmethod
+    def validate_vat_symbol(cls, v: str) -> str:
+        if v not in VALID_VAT_SYMBOLS:
+            raise ValueError(f"Invalid vat_symbol '{v}'. Must be one of: {sorted(VALID_VAT_SYMBOLS)}")
+        return v
 
     vat_symbol: str                     # "23", "8", "5", "0", "Zw", "00"
     vat_rate: float                     # e.g. 23.00 or -5.00 for reverse charge

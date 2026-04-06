@@ -15,9 +15,10 @@ def insert_document(cursor, document_data: Dict[str, Any]) -> int:
             gross_amount, net_amount, date, vendor, customer,
             contractor_nip, contractor_name,
             contractor_street, contractor_city, contractor_postal_code,
-            contractor_country, doc_type, status
+            contractor_country, supplier_region, supplier_country_code,
+            doc_type, status
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING document_id
         """,
         (
@@ -36,6 +37,8 @@ def insert_document(cursor, document_data: Dict[str, Any]) -> int:
             document_data.get("contractor_city"),
             document_data.get("contractor_postal_code"),
             document_data.get("contractor_country"),
+            document_data.get("supplier_region"),
+            document_data.get("supplier_country_code"),
             document_data.get("doc_type", "FZ"),
             "PENDING",
         ),
@@ -52,7 +55,8 @@ def get_documents_by_status(cursor, status: str = "PENDING") -> List[Dict[str, A
                vat_amount, gross_amount, net_amount, date, vendor, customer,
                contractor_nip, contractor_name,
                contractor_street, contractor_city, contractor_postal_code,
-               contractor_country, doc_type
+               contractor_country, supplier_region, supplier_country_code,
+               doc_type
         FROM documents
         WHERE status = %s
         ORDER BY document_id
@@ -71,7 +75,8 @@ def get_documents_by_ids(cursor, document_ids: List[int]) -> List[Dict[str, Any]
                vat_amount, gross_amount, net_amount, date, vendor, customer,
                contractor_nip, contractor_name,
                contractor_street, contractor_city, contractor_postal_code,
-               contractor_country, doc_type
+               contractor_country, supplier_region, supplier_country_code,
+               doc_type
         FROM documents
         WHERE document_id = ANY(%s)
         ORDER BY document_id

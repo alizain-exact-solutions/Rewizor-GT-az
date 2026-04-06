@@ -5,14 +5,20 @@ import os
 import uuid
 from typing import List, Optional
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from src.epp.constants import DOC_TYPE_PURCHASE_INVOICE, VALID_DOC_TYPES
-from src.services.rewizor_service import export_from_db, process_and_export
+from src.services.ocr_service import OCRExtractionError
+from src.services.rewizor_service import cleanup_upload, export_from_db, process_and_export
 
 logger = logging.getLogger(__name__)
 
+MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
+
+limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(tags=["rewizor"])
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "uploads")
@@ -34,7 +40,9 @@ def _validate_extension(filename: str) -> str:
 # ── OCR + Export ─────────────────────────────────────────────────────────────
 
 @router.post("/upload")
+@limiter.limit("10/minute")
 async def rewizor_upload_and_export(
+    request: Request,
     file: UploadFile = File(...),
 ):
     """Upload a document, run Rewizor OCR, and return the .epp file.
@@ -67,10 +75,22 @@ async def rewizor_upload_and_export(
     try:
         result = process_and_export(file_path)
     except FileNotFoundError:
+        cleanup_upload(file_path)
         raise HTTPException(status_code=404, detail="File not found after upload")
+    except OCRExtractionError as e:
+        logger.error("OCR extraction failed: %s", e)
+        cleanup_upload(file_path)
+        raise HTTPException(status_code=422, detail=f"OCR extraction failed: {e}")
+    except ValueError as e:
+        logger.error("Configuration error: %s", e)
+        cleanup_upload(file_path)
+        raise HTTPException(status_code=500, detail="Server configuration error")
     except Exception as e:
         logger.error("Rewizor export failed: %s", e)
+        cleanup_upload(file_path)
         raise HTTPException(status_code=500, detail=f"Rewizor export failed: {e}")
+
+    cleanup_upload(file_path)
 
     return Response(
         content=result["epp_bytes"],
@@ -81,46 +101,12 @@ async def rewizor_upload_and_export(
     )
 
 
-# ── Async OCR + Export via Celery ────────────────────────────────────────────
-
-@router.post("/upload/async")
-async def rewizor_upload_async(
-    file: UploadFile = File(...),
-):
-    """Upload document and queue Rewizor OCR + export as a Celery task.
-
-    The document type is auto-detected by OCR.
-    Returns a ``task_id`` to poll for the result.
-    """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="No file provided")
-
-    ext = _validate_extension(file.filename)
-    unique_name = f"{uuid.uuid4().hex}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, unique_name)
-
-    try:
-        contents = await file.read()
-        if not contents:
-            raise HTTPException(status_code=400, detail="Uploaded file is empty")
-        with open(file_path, "wb") as f:
-            f.write(contents)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Failed to save uploaded file: %s", e)
-        raise HTTPException(status_code=500, detail="Failed to save uploaded file")
-
-    from src.workers.tasks.rewizor_export_task import rewizor_export_task
-
-    task = rewizor_export_task.delay(file_path)
-    return {"message": "Queued for Rewizor export", "file": unique_name, "task_id": task.id}
-
-
 # ── DB Batch Export ──────────────────────────────────────────────────────────
 
 @router.post("/export")
+@limiter.limit("30/minute")
 async def rewizor_db_export(
+    request: Request,
     document_ids: Optional[List[int]] = Query(None, description="Specific document IDs"),
     status: str = Query("PENDING", description="Document status filter"),
     doc_type: str = Query(DOC_TYPE_PURCHASE_INVOICE, description="Document type"),

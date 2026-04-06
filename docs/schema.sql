@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS documents (
     contractor_city TEXT,
     contractor_postal_code TEXT,
     contractor_country TEXT DEFAULT 'PL',
+    supplier_region TEXT,
+    supplier_country_code TEXT,
     doc_type TEXT DEFAULT 'FZ',
     status TEXT DEFAULT 'PENDING',
     created_at TIMESTAMP DEFAULT NOW()

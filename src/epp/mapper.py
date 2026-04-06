@@ -27,17 +27,22 @@ from src.epp.constants import (
     PAYMENT_TRANSFER,
     RATE_TO_SYMBOL,
     REGISTER_PURCHASE,
+    TRANSACTION_CODE_IMPORT_SERVICES_EU,
+    TRANSACTION_CODE_IMPORT_SERVICES_NON_EU,
     VALID_DOC_TYPES,
+    VAT_RATE_EXEMPT,
+    VAT_RATE_NOT_APPLICABLE,
     VAT_RATE_REVERSE_CHARGE,
     VAT_SYMBOL_23,
+    VAT_SYMBOL_EXEMPT,
+    VAT_SYMBOL_NOT_APPLICABLE,
     VAT_SYMBOL_REVERSE_CHARGE,
+    VALID_PAYMENT_METHODS,
 )
+from src.epp.classifier import classify_supplier
 from src.epp.schemas import EPPDocument, EPPHeader, EPPVatRow
 
 logger = logging.getLogger(__name__)
-
-# Countries whose NIP/tax-id does NOT start with "PL" → foreign supplier
-_POLISH_PREFIXES = {"PL", ""}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -67,32 +72,15 @@ def _contractor_symbol(name: Optional[str], nip: Optional[str] = None) -> str:
 
 
 def _is_foreign_supplier(invoice: Dict[str, Any]) -> bool:
-    """Heuristic: the supplier is non-Polish when *any* of these hold:
-
-    - ``contractor_country`` is set and not "PL" / "Polska"
-    - ``currency`` is not PLN
-    - ``contractor_nip`` is empty or does not look like a 10-digit Polish NIP
-    """
-    country = (invoice.get("contractor_country") or "").strip().upper()
-    if country and country not in ("PL", "POLSKA", "POLAND", ""):
-        return True
-
-    currency = (invoice.get("currency") or "PLN").strip().upper()
-    if currency != "PLN":
-        return True
-
-    nip = invoice.get("contractor_nip") or ""
-    digits = "".join(c for c in nip if c.isdigit())
-    if digits and len(digits) != 10:
-        return True
-
-    return False
+    """True when the supplier is non-Polish (EU or NON-EU)."""
+    return classify_supplier(invoice)["type"] != "PL"
 
 
-def _is_reverse_charge(invoice: Dict[str, Any]) -> bool:
-    """Determine whether this invoice should use the "00" reverse-charge symbol.
+def _is_import_uslug(invoice: Dict[str, Any]) -> bool:
+    """True when the invoice qualifies as import usług.
 
-    True when the supplier is foreign **and** VAT is zero.
+    Foreign supplier + zero VAT on the invoice → buyer must
+    self-assess VAT (reverse charge) in Poland.
     """
     vat = _safe_float(invoice.get("vat_amount"))
     if vat != 0.0:
@@ -110,8 +98,8 @@ def _infer_vat_rows(
     if reverse_charge:
         return [
             EPPVatRow(
-                vat_symbol=VAT_SYMBOL_REVERSE_CHARGE,
-                vat_rate=VAT_RATE_REVERSE_CHARGE,
+                vat_symbol=VAT_SYMBOL_NOT_APPLICABLE,
+                vat_rate=VAT_RATE_NOT_APPLICABLE,
                 net_amount=net,
                 vat_amount=0.0,
                 gross_amount=gross,
@@ -167,7 +155,16 @@ def map_invoice_to_epp(
     if gross == 0.0 and net > 0:
         gross = round(net + vat, 2)
 
+    # Validate that we have at least some amount data
+    if net == 0.0 and vat == 0.0 and gross == 0.0 and not is_non_vat:
+        logger.warning("Invoice %s has all-zero amounts",
+                       invoice.get("invoice_number"))
+
     issue_date = invoice.get("date") or invoice.get("issue_date") or ""
+    if not issue_date:
+        logger.warning("Invoice %s has no issue date, EPP may be incomplete",
+                       invoice.get("invoice_number"))
+
     sale_date = invoice.get("sale_date") or issue_date
     receipt_date = invoice.get("receipt_date") or issue_date
 
@@ -176,20 +173,39 @@ def map_invoice_to_epp(
     symbol = _contractor_symbol(contractor_name, contractor_nip)
 
     currency = (invoice.get("currency") or "PLN").strip().upper()
-    exchange_rate = _safe_float(invoice.get("exchange_rate"), default=1.0)
+    raw_rate = invoice.get("exchange_rate")
+    try:
+        exchange_rate = round(float(raw_rate), 4) if raw_rate is not None else 1.0
+    except (TypeError, ValueError):
+        exchange_rate = 1.0
     if exchange_rate == 0.0:
         exchange_rate = 1.0
 
-    reverse_charge = _is_reverse_charge(invoice)
+    reverse_charge = _is_import_uslug(invoice)
+    origin = classify_supplier(invoice)["type"]
+
+    raw_payment_method = (invoice.get("payment_method") or "").strip().upper()
+    payment_method = raw_payment_method if raw_payment_method in VALID_PAYMENT_METHODS else ""
+    if origin != "PL":
+        payment_method = ""
+    payment_due_date = invoice.get("payment_due_date") or issue_date
 
     register_type = DOC_TYPE_TO_REGISTER.get(doc_type, REGISTER_PURCHASE)
+
+    # Transaction classification for foreign services
+    if reverse_charge and origin == "EU":
+        kod_transakcji = TRANSACTION_CODE_IMPORT_SERVICES_EU
+    elif reverse_charge and origin == "NON_EU":
+        kod_transakcji = TRANSACTION_CODE_IMPORT_SERVICES_NON_EU
+    else:
+        kod_transakcji = ""
 
     header = EPPHeader(
         doc_type=doc_type,
         rodzaj_rejestru=register_type,
         rodzaj_dokumentu=1 if is_correction else 0,
         doc_number=invoice.get("invoice_number") or "",
-        numer_oryginalny=invoice.get("invoice_number") or "",
+        numer_oryginalny=f"{doc_type} {invoice.get('invoice_number') or ''}".strip(),
         contractor_symbol=symbol,
         contractor_code=symbol,
         contractor_name=contractor_name,
@@ -199,18 +215,20 @@ def map_invoice_to_epp(
         contractor_region=invoice.get("contractor_region") or "",
         contractor_country=invoice.get("contractor_country") or "",
         contractor_nip=contractor_nip,
+        kod_transakcji=kod_transakcji,
         issue_date=issue_date,
         sale_date=sale_date,
         receipt_date=receipt_date,
         net_total=net,
         vat_total=vat,
         gross_total=gross,
-        payment_method=invoice.get("payment_method") or "",
+        payment_method=payment_method,
         amount_paid=_safe_float(invoice.get("amount_paid")),
-        payment_due_date=invoice.get("payment_due_date") or "",
+        payment_due_date=payment_due_date,
         field_35=gross,
         currency=currency,
         exchange_rate=exchange_rate,
+        flag_50=1 if reverse_charge else 0,
     )
 
     # ── VAT breakdown ────────────────────────────────────────────────────
@@ -234,9 +252,9 @@ def map_invoice_to_epp(
             raw_symbol = str(row.get("symbol", ""))
             raw_rate = _safe_float(row.get("rate"))
 
-            if raw_symbol == VAT_SYMBOL_REVERSE_CHARGE or reverse_charge:
-                symbol_out = VAT_SYMBOL_REVERSE_CHARGE
-                rate_out = VAT_RATE_REVERSE_CHARGE
+            if raw_symbol == VAT_SYMBOL_REVERSE_CHARGE or raw_symbol == "00" or reverse_charge:
+                symbol_out = VAT_SYMBOL_NOT_APPLICABLE
+                rate_out = VAT_RATE_NOT_APPLICABLE
             else:
                 symbol_out = raw_symbol or RATE_TO_SYMBOL.get(raw_rate, VAT_SYMBOL_23)
                 rate_out = raw_rate

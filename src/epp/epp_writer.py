@@ -37,9 +37,9 @@ def _build_info_line(info: EPPInfo) -> str:
         quote_field(info.generator_nip),        # 5  NIP programu
         quote_field(info.generator_city),       # 6  Miejscowość programu
         quote_field(info.company_name),         # 7  Nazwa firmy
-        "",                                     # 8  Ulica firmy
-        "",                                     # 9  Miasto firmy
-        "",                                     # 10 Kod pocztowy firmy
+        quote_field(info.company_street),       # 8  Ulica firmy
+        quote_field(info.company_city),         # 9  Miasto firmy
+        quote_field(info.company_postal_code),  # 10 Kod pocztowy firmy
         quote_field(info.company_nip),          # 11 NIP firmy (with prefix)
         "",                                     # 12
         "",                                     # 13
@@ -90,9 +90,9 @@ def _build_header_line(doc: EPPDocument) -> str:
         format_epp_amount(h.vat_total),         # 27 VAT
         format_epp_amount(h.gross_total),       # 28 Brutto
         format_epp_amount(h.field_29),          # 29 (optional)
-        h.payment_method,                       # 30 Forma płatności
+        quote_field(h.payment_method),              # 30 Forma płatności
         format_epp_amount(h.amount_paid),       # 31 Zapłacono
-        h.field_32,                             # 32 (reserved)
+        quote_field(h.field_32),                # 32 (reserved)
         format_epp_date(due),                   # 33 Termin płatności
         format_epp_amount(h.field_34),          # 34 (optional)
         format_epp_amount(h.field_35),          # 35 (optional)

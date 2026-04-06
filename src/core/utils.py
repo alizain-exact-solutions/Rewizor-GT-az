@@ -6,12 +6,14 @@ from typing import Any, Optional
 
 
 def normalize_amount(value: Any) -> Optional[float]:
-	"""Normalize numeric amounts to positive 2-decimal floats."""
+	"""Normalize numeric amounts to 2-decimal floats.
+
+	Preserves negative values (needed for correction documents).
+	"""
 	if value is None:
 		return None
 	try:
-		amount = float(value)
-		return round(abs(amount), 2)
+		return round(float(value), 2)
 	except (TypeError, ValueError):
 		return None
 

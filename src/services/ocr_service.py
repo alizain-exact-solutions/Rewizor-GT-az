@@ -26,6 +26,11 @@ from src.core.utils import normalize_amount, normalize_date
 
 logger = logging.getLogger(__name__)
 
+
+class OCRExtractionError(Exception):
+    """Raised when OCR extraction or parsing fails."""
+
+
 # Prompt engineered for Polish accounting documents destined for Rewizor GT import.
 _REWIZOR_PROMPT = """
 Analyze this Polish accounting document image and extract ALL of the
@@ -45,6 +50,7 @@ no markdown fences, no commentary.
   "net_amount": numeric total net,
   "vat_amount": numeric total VAT,
   "gross_amount": numeric total gross (brutto),
+  "amount_paid": numeric amount already paid (zapłacono/wpłacono) or 0,
   "vendor": "seller / supplier company name",
   "customer": "buyer company name",
   "contractor_nip": "seller tax ID / NIP (digits only) or null",
@@ -96,9 +102,12 @@ Rules:
   to "vat_breakdown".  If only one rate, the array has one element.
   For non-VAT documents (WB, RK, PK, DE), set vat_breakdown to [].
 - If the invoice is from a FOREIGN (non-Polish) seller and has zero VAT,
-  use symbol "00" (reverse charge / odwrotne obciazenie).
-- "symbol" for VAT exempt (Polish seller) is "Zw".
-  "np" for transactions not subject to VAT (nie podlega).
+  use symbol "np" (nie podlega / not subject to Polish VAT).
+  This applies to import usług (import of services) — the buyer must
+  self-assess VAT in Poland via reverse charge.
+- "symbol" for VAT exempt domestic transactions (Polish seller) is "Zw".
+  "np" for transactions not subject to VAT (nie podlega) — including all
+  foreign services.
   For standard rates use the numeric string ("23", "8", "5", "0").
 - "contractor_country" must be an ISO 3166-1 alpha-2 code (PL, US, DE, etc.).
   If the seller address clearly indicates a country, extract it.
@@ -129,32 +138,52 @@ class RewizorOCRService:
 
         The returned dict is compatible with
         :func:`src.epp.mapper.map_invoice_to_epp`.
-        """
-        logger.info("Rewizor OCR: analysing %s", image_path)
-        base64_image = self._encode_image(image_path)
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": _REWIZOR_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}",
-                            },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=2000,
-            temperature=0,
-        )
+        Raises:
+            FileNotFoundError: If *image_path* does not exist.
+            OCRExtractionError: If the OpenAI API call or JSON parsing fails.
+        """
+        if not os.path.isfile(image_path):
+            raise FileNotFoundError(f"Image/PDF not found: {image_path}")
+
+        logger.info("Rewizor OCR: analysing %s", image_path)
+
+        try:
+            base64_images = self._encode_images(image_path)
+        except Exception as exc:
+            logger.error("Failed to encode image %s: %s", image_path, exc)
+            raise OCRExtractionError(f"Image encoding failed: {exc}") from exc
+
+        try:
+            content: list[dict] = [{"type": "text", "text": _REWIZOR_PROMPT}]
+            for b64_img in base64_images:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/png;base64,{b64_img}",
+                    },
+                })
+
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=2000,
+                temperature=0,
+            )
+        except Exception as exc:
+            logger.error("OpenAI API call failed for %s: %s", image_path, exc)
+            raise OCRExtractionError(f"OpenAI API call failed: {exc}") from exc
 
         raw = response.choices[0].message.content
-        data = self._parse_json(raw)
+        if not raw:
+            raise OCRExtractionError("OpenAI returned empty response")
+
+        try:
+            data = self._parse_json(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.error("Failed to parse OCR JSON: %s\nRaw: %s", exc, raw[:500])
+            raise OCRExtractionError(f"Failed to parse OCR response as JSON: {exc}") from exc
+
         data = self._normalize(data)
         logger.info("Rewizor OCR: extracted invoice %s", data.get("invoice_number"))
         return data
@@ -178,7 +207,7 @@ class RewizorOCRService:
         out = dict(data)
 
         # Amounts
-        for key in ("net_amount", "vat_amount", "gross_amount"):
+        for key in ("net_amount", "vat_amount", "gross_amount", "amount_paid"):
             out[key] = normalize_amount(out.get(key))
 
         # Exchange rate (keep as-is float, not absolute value)
@@ -253,19 +282,31 @@ class RewizorOCRService:
     # Image handling (self-contained)
     # ------------------------------------------------------------------
 
-    def _encode_image(self, image_path: str) -> str:
+    def _encode_images(self, image_path: str) -> list[str]:
+        """Return a list of base64-encoded images (one per page for PDFs)."""
         if image_path.lower().endswith(".pdf"):
-            image_path = self._pdf_to_image(image_path)
-        with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
+            paths = self._pdf_to_images(image_path, max_pages=2)
+        else:
+            paths = [image_path]
+        encoded = []
+        for p in paths:
+            with open(p, "rb") as f:
+                encoded.append(base64.b64encode(f.read()).decode("utf-8"))
+        return encoded
 
     @staticmethod
-    def _pdf_to_image(pdf_path: str) -> str:
+    def _pdf_to_images(pdf_path: str, max_pages: int = 2) -> list[str]:
+        """Render the first *max_pages* pages of a PDF to PNG files."""
         doc = fitz.open(pdf_path)
-        page = doc[0]
-        pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-        img = Image.open(io.BytesIO(pix.tobytes("png")))
-        out_path = pdf_path.rsplit(".", 1)[0] + "_rewizor.png"
-        img.save(out_path, "PNG")
+        pages_to_render = min(len(doc), max_pages)
+        out_paths: list[str] = []
+        base = pdf_path.rsplit(".", 1)[0]
+        for i in range(pages_to_render):
+            page = doc[i]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img = Image.open(io.BytesIO(pix.tobytes("png")))
+            out_path = f"{base}_rewizor_p{i + 1}.png"
+            img.save(out_path, "PNG")
+            out_paths.append(out_path)
         doc.close()
-        return out_path
+        return out_paths

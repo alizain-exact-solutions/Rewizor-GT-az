@@ -10,6 +10,9 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from src.api.accounting_api import router as accounting_router
+from src.api.documents_api import router as documents_router
+from src.api.exports_api import router as exports_router
 from src.api.rewizor_api import router as rewizor_router
 
 load_dotenv()
@@ -39,6 +42,9 @@ async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 
 app.include_router(rewizor_router, prefix="/api/v1/rewizor")
+app.include_router(accounting_router, prefix="/api/v1")
+app.include_router(documents_router, prefix="/api/v1")
+app.include_router(exports_router, prefix="/api/v1")
 
 
 @app.get("/health")

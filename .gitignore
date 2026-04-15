@@ -13,6 +13,12 @@ env/
 
 # Environment variables
 .env
+.env.example
+env.py 
+elembic.ini
+
+script.py.mako 
+
 
 # IDE
 .vscode/
@@ -33,3 +39,7 @@ celerybeat-schedule.db
 
 # Docker
 *.log
+
+IMP Docs/
+epp files/
+tests/

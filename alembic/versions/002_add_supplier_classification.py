@@ -3,11 +3,14 @@
 Revision ID: 002
 Revises: 001
 Create Date: 2026-04-06
+
+**Now a no-op.** Migration ``001`` was later extended to include the
+``supplier_region`` and ``supplier_country_code`` columns directly, so
+re-adding them here would fail with ``DuplicateColumn`` on any fresh
+database. The revision is kept so the chain 001 → 002 → 003 → 004 stays
+continuous for databases that were stamped at 001 before the edit.
 """
 from typing import Sequence, Union
-
-from alembic import op
-import sqlalchemy as sa
 
 revision: str = "002"
 down_revision: Union[str, None] = "001"
@@ -16,10 +19,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column("documents", sa.Column("supplier_region", sa.Text))
-    op.add_column("documents", sa.Column("supplier_country_code", sa.Text))
+    # Intentionally empty — see module docstring.
+    pass
 
 
 def downgrade() -> None:
-    op.drop_column("documents", "supplier_country_code")
-    op.drop_column("documents", "supplier_region")
+    # Intentionally empty — see module docstring.
+    pass

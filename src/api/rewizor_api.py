@@ -1,18 +1,35 @@
-"""Rewizor GT EPP export endpoints."""
+"""Rewizor GT OCR + EPP ingestion endpoint.
+
+The ``/rewizor`` prefix is reserved for the **OCR-driven** ingestion
+path — upload a PDF/image, run Rewizor OCR on it, and return the
+generated ``.epp`` bytes. Pure read/regenerate actions on already-
+persisted documents live under ``/documents`` (see
+:mod:`src.api.documents_api`).
+
+The endpoint is **tenant-scoped** — the caller supplies the tenant id
+via the ``X-Tenant-ID`` header (see :func:`src.api.tenant.get_tenant_id`).
+The service looks up that tenant's saved accounting settings (configured
+on the frontend through ``/api/v1/accounting/settings``) and uses them to
+populate the EPP [INFO] section.
+"""
 
 import logging
 import os
 import uuid
-from typing import List, Optional
+from typing import Annotated
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from src.epp.constants import DOC_TYPE_PURCHASE_INVOICE, VALID_DOC_TYPES
+from src.api.tenant import get_tenant_id
 from src.services.ocr_service import OCRExtractionError
-from src.services.rewizor_service import cleanup_upload, export_from_db, process_and_export
+from src.services.rewizor_service import (
+    AccountingNotConfigured,
+    cleanup_upload,
+    process_and_export,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +60,18 @@ def _validate_extension(filename: str) -> str:
 @limiter.limit("10/minute")
 async def rewizor_upload_and_export(
     request: Request,
+    tenant_id: Annotated[str, Depends(get_tenant_id)],
     file: UploadFile = File(...),
 ):
     """Upload a document, run Rewizor OCR, and return the .epp file.
 
     The document type (FZ, FS, KZ, KS, FZK, FSK, KZK, KSK, WB, RK, PK, DE)
-    is auto-detected by OCR from the document content.
+    is auto-detected by the OCR from the document content.
 
-    The response is the generated EPP file (Windows-1250 encoded)
-    ready for import into Rewizor GT.
+    **Requires** the tenant's Accounting Details to be saved first via
+    ``PUT /api/v1/accounting/settings`` — otherwise returns **412
+    Precondition Failed** so the frontend can redirect the operator to
+    that page.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -73,7 +93,16 @@ async def rewizor_upload_and_export(
         raise HTTPException(status_code=500, detail="Failed to save uploaded file")
 
     try:
-        result = process_and_export(file_path)
+        result = process_and_export(file_path, tenant_id=tenant_id)
+    except AccountingNotConfigured as e:
+        cleanup_upload(file_path)
+        raise HTTPException(
+            status_code=412,
+            detail=(
+                "Accounting details not configured for this tenant. "
+                "Save the Accounting Details form before running an EPP export."
+            ),
+        ) from e
     except FileNotFoundError:
         cleanup_upload(file_path)
         raise HTTPException(status_code=404, detail="File not found after upload")
@@ -101,40 +130,6 @@ async def rewizor_upload_and_export(
     )
 
 
-# ── DB Batch Export ──────────────────────────────────────────────────────────
-
-@router.post("/export")
-@limiter.limit("30/minute")
-async def rewizor_db_export(
-    request: Request,
-    document_ids: Optional[List[int]] = Query(None, description="Specific document IDs"),
-    status: str = Query("PENDING", description="Document status filter"),
-    doc_type: str = Query(DOC_TYPE_PURCHASE_INVOICE, description="Document type"),
-):
-    """Generate an EPP file from documents already stored in the database.
-
-    Either provide explicit ``document_ids`` or filter by ``status``.
-    """
-    if doc_type not in VALID_DOC_TYPES:
-        raise HTTPException(status_code=400, detail=f"Invalid doc_type '{doc_type}'")
-
-    try:
-        result = export_from_db(
-            document_ids=document_ids,
-            status=status,
-            doc_type=doc_type,
-        )
-    except Exception as e:
-        logger.error("Rewizor DB export failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Export failed: {e}")
-
-    if result["count"] == 0:
-        raise HTTPException(status_code=404, detail="No documents found for export")
-
-    return Response(
-        content=result["epp_bytes"],
-        media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": f'attachment; filename="{result["epp_filename"]}"',
-        },
-    )
+# NOTE: bulk export from already-persisted documents was removed — the
+# single-doc case is covered by ``POST /documents/{id}/regenerate`` and
+# re-downloading original bytes is covered by ``GET /exports/{id}/download``.

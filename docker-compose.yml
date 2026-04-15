@@ -12,6 +12,10 @@ services:
       - DB_PORT=5432
     command: >
       sh -c "pip install --no-cache-dir -r requirements.txt &&
+      until pg_isready -h $$DB_HOST -p $$DB_PORT -U $$DB_USER; do
+        echo 'Waiting for Postgres...'; sleep 1;
+      done &&
+      alembic upgrade head &&
       uvicorn src.api.main:app --host 0.0.0.0 --port 8001"
     ports:
       - "8001:8001"
@@ -28,7 +32,10 @@ services:
       - "5435:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./docs/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    # NOTE: schema.sql is NOT mounted here on purpose.
+    # Alembic (`alembic upgrade head`, run from the api container on startup)
+    # is the single source of truth for the DB schema. docs/schema.sql is
+    # kept as human-readable documentation only.
 
 volumes:
   pgdata:

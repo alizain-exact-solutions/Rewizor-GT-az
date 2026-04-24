@@ -1,0 +1,45 @@
+# Git / VCS
+.git
+.gitignore
+
+# Environment / secrets
+.env
+.env.*
+
+# Python artifacts
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# Tests & dev-only files
+tests/
+conftest.py
+pytest.ini
+file.py
+
+# Docs & reference material
+docs/
+IMP Docs/
+*.md
+
+# Sample / scratch EPP output
+epp files/
+
+# Uploaded files (runtime, not baked into image)
+uploads/
+
+# Docker / deploy config (not needed inside the image)
+docker-compose.yml
+fly.toml
+Dockerfile
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# GitHub Actions
+.github/

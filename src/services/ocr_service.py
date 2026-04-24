@@ -157,7 +157,7 @@ that goes into "customer_nip", NOT "contractor_nip".
   "contractor_region": "SELLER's state / province / województwo or null",
   "contractor_country": "SELLER's country as ISO 3166-1 alpha-2 code (PL, US, DE, NL, ...). Derive from the SELLER's address, not the buyer's. For example: Amazon Web Services, Inc. at 410 Terry Ave North, Seattle, WA → 'US'. Return null only if truly unknown.",
   "customer_nip": "BUYER's tax ID / VAT number or null",
-  "transaction_id": "any transaction / payment / reference ID visible on the document (labels: 'Transaction ID', 'Reference', 'Numer transakcji', 'Payment ID', 'Stripe ch_...'). Return the raw value. Null if none.",
+  "transaction_id": "any transaction / payment / reference ID visible on the document (labels: 'Transaction ID', 'Reference', 'Numer transakcji', 'Payment ID', 'Stripe ch_...'). Return the COMPLETE raw value — copy every single character, digit, and hyphen exactly as printed. UUIDs must be the full 32 hex digits (8-4-4-4-12 format, e.g. 'eda1f5e6-4330-447e-91d6-a4f4796a97a2'). Never truncate or shorten. Null if none.",
   "is_correction": true or false,
   "vat_breakdown": [
     {

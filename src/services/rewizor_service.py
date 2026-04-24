@@ -29,7 +29,7 @@ from src.core.db import db_session, get_connection
 from src.epp.classifier import classify_supplier
 from src.epp.epp_writer import generate_epp_bytes
 from src.epp.mapper import _coerce_iso_date, map_invoice_to_epp
-from src.epp.schemas import EPPInfo
+from src.epp.schemas import EPPDocument, EPPInfo
 from src.repositories.accounting_repo import get_settings as get_accounting_settings
 from src.repositories.document_repo import (
     get_document,

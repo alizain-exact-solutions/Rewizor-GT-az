@@ -10,9 +10,6 @@ os.environ.setdefault("DB_USER", "postgres")
 os.environ.setdefault("DB_PASSWORD", "root")
 os.environ.setdefault("DB_PORT", "5435")
 os.environ.setdefault("OPENAI_API_KEY", "sk-test-fake-key")
-os.environ.setdefault("EPP_SENDER_NAME", "Test Sender")
-os.environ.setdefault("EPP_COMPANY_NAME", "Test Corp")
-os.environ.setdefault("EPP_COMPANY_NIP", "PL0000000000")
 
 
 @pytest.fixture

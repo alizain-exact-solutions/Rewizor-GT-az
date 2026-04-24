@@ -1,20 +1,23 @@
+# syntax=docker/dockerfile:1.7
 FROM python:3.12-slim
-
-RUN apt-get update && apt-get install -y \
-    curl \
-    libpq-dev \
-    postgresql-client \
-    gcc \
-    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+ENV PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=0 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+
+# All pinned packages ship manylinux wheels (psycopg2-binary, PyMuPDF,
+# pillow, pydantic_core), so we don't need gcc/libpq-dev. BuildKit cache
+# mount keeps downloaded wheels between builds.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 COPY . .
 
-ENV PYTHONPATH=/app
-
-EXPOSE 8000
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8001
+CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8001"]

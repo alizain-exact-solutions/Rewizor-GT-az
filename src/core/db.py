@@ -1,9 +1,11 @@
 """Shared database connection helper.
 
-Every layer (API, services, repositories) opens its own short-lived psycopg2
-connection. This module centralises the env-var configuration and provides
-a context-manager-friendly factory so callers can ``with get_connection()``
-and get automatic close/rollback on error.
+Supports two configuration modes:
+
+* ``DATABASE_URL`` — single connection string (preferred on Fly.io / Heroku
+  style deployments).
+* ``DB_HOST``/``DB_NAME``/``DB_USER``/``DB_PASSWORD``/``DB_PORT`` — discrete
+  vars for local docker-compose.
 """
 
 import logging
@@ -18,10 +20,15 @@ logger = logging.getLogger(__name__)
 
 
 def get_connection() -> _PgConnection:
-    """Open a new psycopg2 connection using DB_* env vars.
+    """Open a new psycopg2 connection.
 
-    Caller owns the lifecycle; prefer :func:`db_session` for simple CRUD.
+    Prefers ``DATABASE_URL`` when set (Fly.io injects this for attached
+    Postgres); falls back to the discrete ``DB_*`` env vars.
     """
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return psycopg2.connect(database_url)
+
     return psycopg2.connect(
         host=os.getenv("DB_HOST"),
         dbname=os.getenv("DB_NAME"),
@@ -33,14 +40,7 @@ def get_connection() -> _PgConnection:
 
 @contextmanager
 def db_session() -> Iterator[_PgConnection]:
-    """Open a connection, commit on clean exit, rollback on exception, always close.
-
-    Usage::
-
-        with db_session() as conn:
-            cur = conn.cursor()
-            cur.execute(...)
-    """
+    """Open a connection, commit on clean exit, rollback on exception, always close."""
     conn = get_connection()
     try:
         yield conn

@@ -49,6 +49,7 @@ from src.epp.constants import (
     TRANSACTION_CODE_IMPORT_SERVICES,
     TXN_TYPE_DOMESTIC,
     TXN_TYPE_IMPORT_SERVICES,
+    TXN_TYPE_REVERSE_CHARGE_SERVICES,
     VALID_DOC_TYPES,
     VALID_PAYMENT_METHODS,
     VAT_RATE_EXEMPT,
@@ -358,23 +359,30 @@ def _contractor_nip_for_header(raw_nip: str, country_code: str) -> str:
 
     For foreign EU suppliers the NIP should include the 2-letter country
     prefix (e.g. "NL862287339B01"). For Polish suppliers we emit the bare
-    digits — matching Rewizor's expectation.
+    digits — matching Rewizor's expectation. For non-EU suppliers without
+    any VAT/tax identifier on the invoice we synthesise a placeholder
+    from the country code so Rewizor has *something* to hang the
+    contractor card on; otherwise it rejects reverse-charge transactions
+    with "Nieprawidłowa transakcja VAT zakupu".
     """
-    if not raw_nip:
-        return ""
-    cleaned = str(raw_nip).strip()
-    if not cleaned:
-        return ""
-    # Already prefixed → trust it.
-    if len(cleaned) >= 3 and cleaned[:2].isalpha() and cleaned[:2].upper() != "PL":
-        return cleaned.upper()
-    digits = "".join(c for c in cleaned if c.isdigit() or c.isalpha())
-    if country_code and country_code.upper() != "PL" and not (
-        len(digits) >= 2 and digits[:2].isalpha()
-    ):
-        return f"{country_code.upper()}{digits}"
-    # Polish / unknown → digits only
-    return "".join(c for c in cleaned if c.isdigit())
+    cleaned = (str(raw_nip).strip() if raw_nip else "")
+    if cleaned:
+        # Already prefixed → trust it.
+        if len(cleaned) >= 3 and cleaned[:2].isalpha() and cleaned[:2].upper() != "PL":
+            return cleaned.upper()
+        digits = "".join(c for c in cleaned if c.isdigit() or c.isalpha())
+        if country_code and country_code.upper() != "PL" and not (
+            len(digits) >= 2 and digits[:2].isalpha()
+        ):
+            return f"{country_code.upper()}{digits}"
+        # Polish / unknown → digits only
+        return "".join(c for c in cleaned if c.isdigit())
+
+    # Empty NIP: synthesise from country code for non-EU suppliers so
+    # reverse-charge transactions have an identifier Rewizor can accept.
+    if country_code and country_code.upper() != "PL":
+        return f"{country_code.upper()}0000000000"
+    return ""
 
 
 # ── Public API ──────────────────────────────────────────────────────────────
@@ -480,10 +488,17 @@ def map_invoice_to_epp(
             currency,
         )
 
-    # ── Reverse charge detection (import of services) ──
+    # ── Reverse charge detection ──
+    # Rewizor's posting scheme differs per origin:
+    #   * EU supplier → type 11 (IMUn, import of services, intra-community)
+    #   * Non-EU supplier → type 21 (OOu, reverse charge on services)
+    # Using 11 for non-EU triggers "Nieprawidłowa transakcja VAT zakupu".
     reverse_charge = (not is_non_vat) and _is_reverse_charge(invoice)
     if reverse_charge:
-        transaction_type = TXN_TYPE_IMPORT_SERVICES
+        if origin_type == "EU":
+            transaction_type = TXN_TYPE_IMPORT_SERVICES          # 11 – IMUn
+        else:
+            transaction_type = TXN_TYPE_REVERSE_CHARGE_SERVICES  # 21 – OOu
         kod_transakcji = TRANSACTION_CODE_IMPORT_SERVICES
     else:
         transaction_type = TXN_TYPE_DOMESTIC
@@ -645,9 +660,11 @@ def map_invoice_to_epp(
         # Sales-side reverse charge (rare): set TP flag? Leave all zeros
         # unless the caller provides explicit flags.
         pass
-    if reverse_charge and origin_type != "EU":
-        # Import of services from outside EU → IMP flag (JPK_V7 field 15)
-        jpk_flags.imp = 1
+    # Per the EDI++ v1.12 spec, the JPK_V7 IMP flag is reserved for
+    # "Import towarów" (import of GOODS cleared through Polish customs).
+    # Import of services carries no JPK flag — reverse-charge treatment is
+    # conveyed entirely by VAT symbol "oo" + transaction_type=11. Leaving
+    # all flags at 0 is correct for non-EU service imports.
 
     return EPPDocument(
         header=header,

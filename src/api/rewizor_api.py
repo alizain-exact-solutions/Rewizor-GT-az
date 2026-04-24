@@ -1,41 +1,28 @@
 """Rewizor GT OCR + EPP ingestion endpoint.
 
-The ``/rewizor`` prefix is reserved for the **OCR-driven** ingestion
-path — upload a PDF/image, run Rewizor OCR on it, and return the
-generated ``.epp`` bytes. Pure read/regenerate actions on already-
-persisted documents live under ``/documents`` (see
-:mod:`src.api.documents_api`).
+Upload a PDF/image, run OCR, return the generated ``.epp`` bytes. The
+export is also persisted in the ``exports`` table so the caller can
+re-download the exact bytes later through ``/api/v1/exports/{id}/download``.
 
-The endpoint is **tenant-scoped** — the caller supplies the tenant id
-via the ``X-Tenant-ID`` header (see :func:`src.api.tenant.get_tenant_id`).
-The service looks up that tenant's saved accounting settings (configured
-on the frontend through ``/api/v1/accounting/settings``) and uses them to
-populate the EPP [INFO] section.
+Requires a row in ``business_details`` — managed through
+``/api/v1/business-details``.
 """
 
 import logging
 import os
 import uuid
-from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
-from src.api.tenant import get_tenant_id
+from src.core.settings import BusinessDetailsNotConfigured
 from src.services.ocr_service import OCRExtractionError
-from src.services.rewizor_service import (
-    AccountingNotConfigured,
-    cleanup_upload,
-    process_and_export,
-)
+from src.services.rewizor_service import cleanup_upload, process_and_export
 
 logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_SIZE = 20 * 1024 * 1024  # 20 MB
 
-limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(tags=["rewizor"])
 
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "uploads")
@@ -49,29 +36,20 @@ def _validate_extension(filename: str) -> str:
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}",
+            detail=(
+                f"Unsupported file type '{ext}'. "
+                f"Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+            ),
         )
     return ext
 
 
-# ── OCR + Export ─────────────────────────────────────────────────────────────
+@router.post("/upload", summary="Upload a PDF invoice and receive the generated .epp")
+async def upload_and_export(file: UploadFile = File(...)):
+    """Run OCR on the uploaded document and return the .epp file.
 
-@router.post("/upload")
-@limiter.limit("10/minute")
-async def rewizor_upload_and_export(
-    request: Request,
-    tenant_id: Annotated[str, Depends(get_tenant_id)],
-    file: UploadFile = File(...),
-):
-    """Upload a document, run Rewizor OCR, and return the .epp file.
-
-    The document type (FZ, FS, KZ, KS, FZK, FSK, KZK, KSK, WB, RK, PK, DE)
-    is auto-detected by the OCR from the document content.
-
-    **Requires** the tenant's Accounting Details to be saved first via
-    ``PUT /api/v1/accounting/settings`` — otherwise returns **412
-    Precondition Failed** so the frontend can redirect the operator to
-    that page.
+    The ``X-Export-Id`` response header carries the DB id of the stored
+    export so the caller can re-download the exact bytes later.
     """
     if not file.filename:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -84,6 +62,11 @@ async def rewizor_upload_and_export(
         contents = await file.read()
         if not contents:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        if len(contents) > MAX_UPLOAD_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds {MAX_UPLOAD_SIZE // (1024 * 1024)} MB limit",
+            )
         with open(file_path, "wb") as f:
             f.write(contents)
     except HTTPException:
@@ -93,14 +76,14 @@ async def rewizor_upload_and_export(
         raise HTTPException(status_code=500, detail="Failed to save uploaded file")
 
     try:
-        result = process_and_export(file_path, tenant_id=tenant_id)
-    except AccountingNotConfigured as e:
+        result = process_and_export(file_path)
+    except BusinessDetailsNotConfigured as e:
         cleanup_upload(file_path)
         raise HTTPException(
             status_code=412,
             detail=(
-                "Accounting details not configured for this tenant. "
-                "Save the Accounting Details form before running an EPP export."
+                "Business details not configured. POST to "
+                "/api/v1/business-details before running an EPP export."
             ),
         ) from e
     except FileNotFoundError:
@@ -126,10 +109,6 @@ async def rewizor_upload_and_export(
         media_type="application/octet-stream",
         headers={
             "Content-Disposition": f'attachment; filename="{result["epp_filename"]}"',
+            "X-Export-Id": str(result["export_id"]),
         },
     )
-
-
-# NOTE: bulk export from already-persisted documents was removed — the
-# single-doc case is covered by ``POST /documents/{id}/regenerate`` and
-# re-downloading original bytes is covered by ``GET /exports/{id}/download``.

@@ -11,31 +11,29 @@ services:
       - DB_HOST=db
       - DB_PORT=5432
     command: >
-      sh -c "pip install --no-cache-dir -r requirements.txt &&
-      until pg_isready -h $$DB_HOST -p $$DB_PORT -U $$DB_USER; do
-        echo 'Waiting for Postgres...'; sleep 1;
-      done &&
-      alembic upgrade head &&
-      uvicorn src.api.main:app --host 0.0.0.0 --port 8001"
+      sh -c "alembic upgrade head &&
+             uvicorn src.api.main:app --host 0.0.0.0 --port 8001 --reload"
     ports:
       - "8001:8001"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_USER=${DB_USER:-user}
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-password}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-root}
       - POSTGRES_DB=${DB_NAME:-rewizor_db}
     ports:
       - "5435:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    # NOTE: schema.sql is NOT mounted here on purpose.
-    # Alembic (`alembic upgrade head`, run from the api container on startup)
-    # is the single source of truth for the DB schema. docs/schema.sql is
-    # kept as human-readable documentation only.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
 volumes:
   pgdata:
